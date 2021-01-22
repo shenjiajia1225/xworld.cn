@@ -1,6 +1,7 @@
 build:
 	#./hack/update-codegen.sh
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o world-controller main.go controller.go
+	rm -f xworld-controller
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o xworld-controller main.go controller.go
 	rm -rf /home/xx/k8s/xworld/*
 	cp ./* -r /home/xx/k8s/xworld/
 	chown xx -R /home/xx/k8s/xworld/*
