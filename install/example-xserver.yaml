@@ -1,0 +1,6 @@
+apiVersion: xworld.cn/v1
+kind: XServer
+metadata:
+  name: example-xserver
+spec:
+  container: example-xserver-container

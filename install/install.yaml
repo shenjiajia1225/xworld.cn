@@ -1,0 +1,68 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: xservers.xworld.cn
+  labels:
+    component: crd
+    app: xworld
+spec:
+  group: xworld.cn
+  names:
+    kind: XServer
+    plural: xservers
+    shortNames:
+      - xs
+    singular: xserver
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - jsonPath: .status.state
+          name: State
+          type: string
+        - jsonPath: .status.address
+          name: Address
+          type: string
+        - jsonPath: .status.port
+          name: Port
+          type: integer
+        - jsonPath: .status.capacity
+          name: Capacity
+          type: integer
+        - jsonPath: .status.count
+          name: Count
+          type: integer
+      schema:
+        openAPIV3Schema:
+         type: object
+         properties:
+           spec:
+             type: object
+             required:
+             - image
+             properties:
+               image:
+                 type: string
+                 title: image name of running xserver
+               replicas:
+                 type: integer
+                 minimum: 0
+           status:
+             type: object
+             title: The status values for the XServer
+             properties:
+               state:
+                 type: string
+                 enum:
+                   - Open
+                   - Close
+               port:
+                 type: integer
+               address:
+                 type: string
+               capacity:
+                 type: integer
+               count:
+                 type: integer
