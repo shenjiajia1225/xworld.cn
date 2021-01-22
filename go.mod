@@ -4,6 +4,9 @@ go 1.14
 
 require (
 	github.com/gophercloud/gophercloud v0.1.0 // indirect
+	github.com/joonix/log v0.0.0-20200409080653-9c1d2ceb5f1d
+	github.com/pkg/errors v0.8.1
+	github.com/sirupsen/logrus v1.4.2
 	gonum.org/v1/netlib v0.0.0-20190331212654-76723241ea4e // indirect
 	k8s.io/api v0.17.16
 	k8s.io/apiextensions-apiserver v0.17.16

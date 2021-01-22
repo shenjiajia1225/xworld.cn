@@ -13,10 +13,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	//appsinformers "k8s.io/client-go/informers/apps/v1"
 	extclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
+	apiextclientv1 "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/typed/apiextensions/v1"
+	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
-	appslisters "k8s.io/client-go/listers/apps/v1"
+	//appslisters "k8s.io/client-go/listers/apps/v1"
+	corelisterv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
@@ -25,8 +28,11 @@ import (
 	xworldv1 "xworld.cn/pkg/apis/xworld/v1"
 	clientset "xworld.cn/pkg/client/clientset/versioned"
 	xworldscheme "xworld.cn/pkg/client/clientset/versioned/scheme"
-	informers "xworld.cn/pkg/client/informers/externalversions/xworld/v1"
+	getterv1 "xworld.cn/pkg/client/clientset/versioned/typed/xworld/v1"
+	"xworld.cn/pkg/client/informers/externalversions"
+	//informers "xworld.cn/pkg/client/informers/externalversions/xworld/v1"
 	listers "xworld.cn/pkg/client/listers/xworld/v1"
+	"xworld.cn/pkg/utils/crd"
 )
 
 const controllerAgentName = "xworld-controller"
@@ -51,10 +57,17 @@ type Controller struct {
 	extclientset    extclientset.Interface
 	xworldclientset clientset.Interface
 
-	deploymentsLister appslisters.DeploymentLister
-	deploymentsSynced cache.InformerSynced
-	xserversLister    listers.XServerLister
-	xserversSynced    cache.InformerSynced
+	crdGetter apiextclientv1.CustomResourceDefinitionInterface
+	podGetter typedcorev1.PodsGetter
+	podLister corelisterv1.PodLister
+	podSynced cache.InformerSynced
+
+	xserverGetter  getterv1.XServersGetter
+	xserversLister listers.XServerLister
+	xserversSynced cache.InformerSynced
+
+	nodeLister corelisterv1.NodeLister
+	nodeSynced cache.InformerSynced
 
 	// workqueue is a rate limited work queue. This is used to queue work to be
 	// processed instead of performing it as soon as a change happens. This
@@ -62,37 +75,49 @@ type Controller struct {
 	// time, and makes it easy to ensure we are never processing the same item
 	// simultaneously in two different workers.
 	workqueue workqueue.RateLimitingInterface
-	// recorder is an event recorder for recording Event resources to the
-	// Kubernetes API.
+	// recorder is an event recorder for recording Event resources to the Kubernetes API.
 	recorder record.EventRecorder
 }
 
 // NewController returns a new xserver controller
 func NewController(
 	kubeclientset kubernetes.Interface,
+	kubeInformerFactory kubeinformers.SharedInformerFactory,
 	extclientset extclientset.Interface,
 	xworldclientset clientset.Interface,
-	xserverInformer informers.XServerInformer) *Controller {
+	xworldInformerFactory externalversions.SharedInformerFactory) *Controller {
 
 	// Create event broadcaster
 	// Add xworld-controller types to the default Kubernetes Scheme so Events can be
 	// logged for xworld-controller types.
 	utilruntime.Must(xworldscheme.AddToScheme(scheme.Scheme))
 	// event recorder. 使用kubectl get events 获取内容时会使用
-	klog.V(4).Info("Creating event broadcaster")
+	klog.Info("Creating event broadcaster")
 	eventBroadcaster := record.NewBroadcaster()
 	eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: kubeclientset.CoreV1().Events("")})
 	recorder := eventBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: controllerAgentName})
 
+	xserverInformer := xworldInformerFactory.Xworld().V1().XServers()
+	pods := kubeInformerFactory.Core().V1().Pods()
 	// 组件会先进行一次list，再持续的watch。list动作是否完成就是看各个informer的HasSynced是否为真
 	controller := &Controller{
 		kubeclientset:   kubeclientset,
 		extclientset:    extclientset,
 		xworldclientset: xworldclientset,
-		xserversLister:  xserverInformer.Lister(),
-		xserversSynced:  xserverInformer.Informer().HasSynced,
-		workqueue:       workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "XServers"),
-		recorder:        recorder,
+
+		crdGetter: extclientset.ApiextensionsV1().CustomResourceDefinitions(),
+		podGetter: kubeclientset.CoreV1(),
+		podLister: pods.Lister(),
+		podSynced: pods.Informer().HasSynced,
+
+		xserversLister: xserverInformer.Lister(),
+		xserversSynced: xserverInformer.Informer().HasSynced,
+
+		nodeLister: kubeInformerFactory.Core().V1().Nodes().Lister(),
+		nodeSynced: kubeInformerFactory.Core().V1().Nodes().Informer().HasSynced,
+
+		workqueue: workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "XServers"),
+		recorder:  recorder,
 	}
 
 	klog.Info("Setting up event handlers")
@@ -117,9 +142,14 @@ func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 	// Start the informer factories to begin populating the informer caches
 	klog.Info("Starting XWorld controller:%v", threadiness)
 
+	err := crd.WaitForEstablishedCRD(c.crdGetter, "xservers.agones.dev")
+	if err != nil {
+		return err
+	}
+
 	// Wait for the caches to be synced before starting workers
 	klog.Info("Waiting for informer caches to sync")
-	if ok := cache.WaitForCacheSync(stopCh, c.deploymentsSynced, c.xserversSynced); !ok {
+	if ok := cache.WaitForCacheSync(stopCh, c.xserversSynced, c.podSynced, c.nodeSynced); !ok {
 		return fmt.Errorf("failed to wait for caches to sync")
 	}
 

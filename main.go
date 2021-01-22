@@ -17,7 +17,7 @@ import (
 	// _ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 
 	clientset "xworld.cn/pkg/client/clientset/versioned"
-	informers "xworld.cn/pkg/client/informers/externalversions"
+	"xworld.cn/pkg/client/informers/externalversions"
 	"xworld.cn/pkg/signals"
 )
 
@@ -26,10 +26,11 @@ var (
 	kubeconfig string
 )
 
-func main() {
-	//local_test()
-	//return
+const (
+	NUM_WORKER = 2
+)
 
+func main() {
 	klog.InitFlags(nil)
 	flag.Parse()
 
@@ -40,18 +41,21 @@ func main() {
 
 	// 第二个参数resyncPeriod指每过一段时间，清空本地缓存，从apiserver中做一次list
 	kubeInformerFactory := kubeinformers.NewSharedInformerFactory(kubeClient, time.Second*30)
-	xworldInformerFactory := informers.NewSharedInformerFactory(xworldClient, time.Second*30)
+	xworldInformerFactory := externalversions.NewSharedInformerFactory(xworldClient, time.Second*30)
 
-	controller := NewController(kubeClient, extClient, xworldClient, xworldInformerFactory.Xworld().V1().XServers())
+	controller := NewController(kubeClient, kubeInformerFactory, extClient, xworldClient, xworldInformerFactory)
 
 	// notice that there is no need to run Start methods in a separate goroutine. (i.e. go kubeInformerFactory.Start(stopCh)
 	// Start method is non-blocking and runs all registered informers in a dedicated goroutine.
 	kubeInformerFactory.Start(stopCh)
 	xworldInformerFactory.Start(stopCh)
 
-	if err = controller.Run(2, stopCh); err != nil {
+	if err = controller.Run(NUM_WORKER, stopCh); err != nil {
 		klog.Fatalf("Error running controller: %s", err.Error())
 	}
+
+	<-stopCh
+	klog.Info("xworld controller stop")
 }
 
 func init() {
@@ -96,7 +100,7 @@ func local_test() {
 	}
 	fmt.Printf("new kube client success\n")
 
-	factory := informers.NewSharedInformerFactory(client, 30*time.Second)
+	factory := externalversions.NewSharedInformerFactory(client, 30*time.Second)
 	informer := factory.Xworld().V1().XServers()
 	lister := informer.Lister()
 
