@@ -3,4 +3,4 @@ kind: XServer
 metadata:
   name: example-xserver
 spec:
-  container: example-xserver-container
+  image: gamex:0.0.1

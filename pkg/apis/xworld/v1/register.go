@@ -8,6 +8,8 @@ import (
 	"xworld.cn/pkg/apis/xworld"
 )
 
+const VersionAnnotation = xworld.GroupName + "/version"
+
 var SchemeGroupVersion = schema.GroupVersion{
 	Group:   xworld.GroupName,
 	Version: xworld.Version,

@@ -7,6 +7,11 @@ build:
 	chown xx -R /home/xx/k8s/xworld/*
 	chgrp xx -R /home/xx/k8s/xworld/*
 
+run:
+	kubectl delete crd xservers.xworld.cn
+	kubectl create -f ./install/install.yaml
+	#./xworld-controller
+
 install:
 	kubectl delete crd xs
 	docker build ./ --tag=xworld-controller:0.0.1

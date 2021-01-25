@@ -46,9 +46,6 @@ spec:
                image:
                  type: string
                  title: image name of running xserver
-               replicas:
-                 type: integer
-                 minimum: 0
            status:
              type: object
              title: The status values for the XServer

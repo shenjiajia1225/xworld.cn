@@ -27,7 +27,7 @@ var (
 )
 
 const (
-	NUM_WORKER = 2
+	NUM_WORKER = 64
 )
 
 func main() {

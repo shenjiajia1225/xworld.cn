@@ -2,6 +2,14 @@ package v1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	//"xworld.cn/pkg"
+	//"xworld.cn/pkg/apis/xworld/v1"
+	"xworld.cn/pkg/apis/xworld"
+)
+
+const (
+	XServerStateOpen  XServerState = "Open"
+	XServerStateClose XServerState = "Close"
 )
 
 // +genclient
@@ -16,8 +24,7 @@ type XServer struct {
 }
 
 type XServerSpec struct {
-	Image    string `json:"image,omitempty"`
-	Replicas int32  `json:"replicas"`
+	Image string `json:"image,omitempty"`
 }
 
 type XServerState string
@@ -38,4 +45,27 @@ type XServerList struct {
 	metav1.ListMeta `json:"metadata"`
 
 	Items []XServer `json:"items"`
+}
+
+func (xs *XServer) ApplyDefaults() {
+	// VersionAnnotation is the annotation that stores
+	// the version of sdk which runs in a sidecar
+	if xs.ObjectMeta.Annotations == nil {
+		xs.ObjectMeta.Annotations = map[string]string{}
+	}
+	xs.ObjectMeta.Annotations[VersionAnnotation] = xworld.Version
+	xs.ObjectMeta.Finalizers = append(xs.ObjectMeta.Finalizers, xworld.GroupName)
+
+	xs.Spec.ApplyDefaults()
+	xs.applyStatusDefaults()
+}
+
+func (xs *XServer) applyStatusDefaults() {
+	if xs.Status.State == "" {
+		xs.Status.State = XServerStateOpen
+	}
+}
+
+func (xss *XServerSpec) ApplyDefaults() {
+	xss.Image = ""
 }

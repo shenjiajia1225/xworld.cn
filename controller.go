@@ -8,7 +8,7 @@ import (
 	//appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	//metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	//appsinformers "k8s.io/client-go/informers/apps/v1"
@@ -79,6 +79,14 @@ type Controller struct {
 	recorder record.EventRecorder
 }
 
+func fastRateLimiter() workqueue.RateLimiter {
+	const numFastRetries = 5
+	const fastDelay = 20 * time.Millisecond  // first few retries up to 'numFastRetries' are fast
+	const slowDelay = 500 * time.Millisecond // subsequent retries are slow
+
+	return workqueue.NewItemFastSlowRateLimiter(fastDelay, slowDelay, numFastRetries)
+}
+
 // NewController returns a new xserver controller
 func NewController(
 	kubeclientset kubernetes.Interface,
@@ -116,7 +124,7 @@ func NewController(
 		nodeLister: kubeInformerFactory.Core().V1().Nodes().Lister(),
 		nodeSynced: kubeInformerFactory.Core().V1().Nodes().Informer().HasSynced,
 
-		workqueue: workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "XServers"),
+		workqueue: workqueue.NewNamedRateLimitingQueue(fastRateLimiter(), "XServers"),
 		recorder:  recorder,
 	}
 
@@ -124,8 +132,12 @@ func NewController(
 	// Set up an event handler for when XServer resources change
 	xserverInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: controller.enqueueXServer,
-		UpdateFunc: func(old, new interface{}) {
-			controller.enqueueXServer(new)
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			oldXs := oldObj.(*xworldv1.XServer)
+			newXs := newObj.(*xworldv1.XServer)
+			if oldXs.Status.State != newXs.Status.State || oldXs.ObjectMeta.DeletionTimestamp != newXs.ObjectMeta.DeletionTimestamp {
+				controller.enqueueXServer(newObj)
+			}
 		},
 	})
 	return controller
@@ -140,9 +152,9 @@ func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
 	defer c.workqueue.ShutDown()
 
 	// Start the informer factories to begin populating the informer caches
-	klog.Info("Starting XWorld controller:%v", threadiness)
+	klog.Infof("Starting XWorld controller:%v", threadiness)
 
-	err := crd.WaitForEstablishedCRD(c.crdGetter, "xservers.agones.dev")
+	err := crd.WaitForEstablishedCRD(c.crdGetter, "xservers.xworld.cn")
 	if err != nil {
 		return err
 	}
@@ -254,6 +266,7 @@ func (c *Controller) syncHandler(key string) error {
 	}
 
 	imageName := xserver.Spec.Image
+	klog.Infof("syncHandler begin key[%v] image[%v]", key, imageName)
 	if imageName == "" {
 		// We choose to absorb the error here as the worker would requeue the
 		// resource otherwise. Instead, the next time the resource is updated
@@ -262,6 +275,13 @@ func (c *Controller) syncHandler(key string) error {
 		return nil
 	}
 
+	if xserver.Status.State == "" {
+		klog.Infof("syncHandler init xserver name[%v]", name)
+		xserver.ApplyDefaults()
+	}
+
+	klog.Infof("syncHandler key[%v] ns[%v] name[%v] image[%v]", key, namespace, name, imageName)
+
 	// Finally, we update the status block of the XServer resource to reflect the
 	// current state of the world
 	err = c.updateXServerStatus(xserver, imageName)
@@ -269,20 +289,29 @@ func (c *Controller) syncHandler(key string) error {
 		return err
 	}
 
+	klog.Infof("syncHandler end key[%v]", key)
+
 	c.recorder.Event(xserver, corev1.EventTypeNormal, SuccessSynced, MessageResourceSynced)
 	return nil
 }
 
-func (c *Controller) updateXServerStatus(xserver *xworldv1.XServer, containerName string) error {
+func (c *Controller) updateXServerStatus(xserver *xworldv1.XServer, imageName string) error {
 	// NEVER modify objects from the store. It's a read-only, local cache.
 	// You can use DeepCopy() to make a deep copy of original object and modify this copy
 	// Or create a copy manually for better performance
 	xserverCopy := xserver.DeepCopy()
-	xserverCopy.Status.Address = containerName
+	klog.Infof("updateXServerStatus imagename[%v] xcopy.image[%v] ns[%v][%v] xcopyst[%v]",
+		imageName, xserverCopy.Spec.Image, xserver.Namespace, xserver.ObjectMeta.Namespace,
+		xserverCopy.Status.State)
+
+	xserverCopy.Status.Address = imageName
+	xserverCopy.Spec.Image = imageName
+	xserverCopy.Status.State = xserver.Status.State
 	// If the CustomResourceSubresources feature gate is not enabled,
 	// we must use Update instead of UpdateStatus to update the Status block of the XServer resource.
 	// UpdateStatus will not allow changes to the Spec of the resource,
 	// which is ideal for ensuring nothing other than resource status has been updated.
+	//_, err := c.xserverGetter.XServers(xserver.ObjectMeta.Namespace).Update(xserverCopy)
 	_, err := c.xworldclientset.XworldV1().XServers(xserver.Namespace).Update(xserverCopy)
 	return err
 }
@@ -298,44 +327,4 @@ func (c *Controller) enqueueXServer(obj interface{}) {
 		return
 	}
 	c.workqueue.Add(key)
-}
-
-// handleObject will take any resource implementing metav1.Object and attempt
-// to find the XServer resource that 'owns' it. It does this by looking at the
-// objects metadata.ownerReferences field for an appropriate OwnerReference.
-// It then enqueues that XServer resource to be processed. If the object does not
-// have an appropriate OwnerReference, it will simply be skipped.
-func (c *Controller) handleObject(obj interface{}) {
-	var object metav1.Object
-	var ok bool
-	if object, ok = obj.(metav1.Object); !ok {
-		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
-		if !ok {
-			utilruntime.HandleError(fmt.Errorf("error decoding object, invalid type"))
-			return
-		}
-		object, ok = tombstone.Obj.(metav1.Object)
-		if !ok {
-			utilruntime.HandleError(fmt.Errorf("error decoding object tombstone, invalid type"))
-			return
-		}
-		klog.V(4).Infof("Recovered deleted object '%s' from tombstone", object.GetName())
-	}
-	klog.V(4).Infof("Processing object: %s", object.GetName())
-	if ownerRef := metav1.GetControllerOf(object); ownerRef != nil {
-		// If this object is not owned by a XServer, we should not do anything more
-		// with it.
-		if ownerRef.Kind != "XServer" {
-			return
-		}
-
-		xserver, err := c.xserversLister.XServers(object.GetNamespace()).Get(ownerRef.Name)
-		if err != nil {
-			klog.V(4).Infof("ignoring orphaned object '%s' of xserver '%s'", object.GetSelfLink(), ownerRef.Name)
-			return
-		}
-
-		c.enqueueXServer(xserver)
-		return
-	}
 }
